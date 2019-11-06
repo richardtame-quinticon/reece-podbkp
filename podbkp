@@ -1,0 +1,137 @@
+#!/bin/bash
+
+PATH="$PATH:/opt/Purity/sbin"
+
+if (($# == 1))
+then
+        echo "Running locally."
+        PREFIX=
+elif (($# == 2))
+then
+        echo "Running remotely."
+        PREFIX="ssh $2"
+else
+        echo "usage: $0 POD [ARRAY]"
+        exit 1
+fi
+
+
+echo "Checking if the array ${2:+'$2' }is online..."
+
+if ! $PREFIX purearray list >/dev/null
+then
+        exit 1
+fi
+
+
+echo "Checking if the pod '$1' exists..."
+
+if ! $PREFIX purepod list "$1" >/dev/null
+then
+        exit 1
+fi
+
+
+echo "Checking if the pod '$1' has any volumes..."
+
+if ! $PREFIX purevol list "$1::*" >/dev/null
+then
+        exit 1
+fi
+
+
+echo "Checking if the protection group '$1-async' exists..."
+
+if ! $PREFIX purepgroup list "$1-async" >/dev/null 2>&1
+then
+        echo "Creating the protection group '$1-async'..."
+
+        if ! $PREFIX purepgroup create "$1-async" >/dev/null
+        then
+                exit 1
+        fi
+fi
+
+
+echo "Checking if a transfer is in progress..."
+
+if $PREFIX purepgroup list --nvp --snap --transfer "$1-async" | grep "Progress=." >/dev/null 2>&1
+then
+        echo "Error on $1-async: Transfer in progress."
+        exit 1
+fi
+
+
+echo "Cloning the pod '$1'..."
+
+if ! $PREFIX purepod clone "$1" "$1-$$" >/dev/null
+then
+        exit 1
+fi
+
+
+echo "Copying each volume from the pod clone '$1-$$':"
+
+for VOL in $($PREFIX purevol listobj "$1-$$::*")
+do
+        BASENAME=${VOL#$1-$$::}
+        echo "- $BASENAME"
+
+        if ! $PREFIX purevol list "$BASENAME-async" >/dev/null 2>&1
+        then
+                echo "  Creating the volume '$BASENAME-async'..."
+
+                if ! $PREFIX purevol create --size 1m "$BASENAME-async" >/dev/null
+                then
+                        exit 1
+                fi
+        fi
+
+        if ! $PREFIX purevol list --protect "$BASENAME-async" | grep "^$BASENAME-async *$1-async *$" >/dev/null 2>&1
+        then
+                echo "  Adding the volume '$BASENAME-async' to the protection group '$1-async'..."
+
+                if ! $PREFIX purevol add --pgroup "$1-async" "$BASENAME-async" >/dev/null
+                then
+                        exit 1
+                fi
+        fi
+
+        if ! $PREFIX purevol copy --overwrite "$1-$$::$BASENAME" "$BASENAME-async" >/dev/null
+        then
+                exit 1
+        fi
+
+        $PREFIX purevol eradicate $(purevol listobj --pending-only --type snap "$BASENAME-async") >/dev/null
+done
+
+
+echo "Replicating the protection group '$1-async'..."
+
+$PREFIX purepgroup snap --apply-retention --replicate-now "$1-async" >/dev/null
+
+
+echo "Cleaning up:"
+
+for VOL in $($PREFIX purevol listobj --pending "$1-$$::*")
+do
+        echo "- $VOL"
+        $PREFIX purevol destroy "$VOL" >/dev/null 2>&1
+        $PREFIX purevol eradicate "$VOL" >/dev/null
+done
+
+if $PREFIX purepgroup list --pending "$1-$$::*" >/dev/null 2>&1
+then
+        for PG in $($PREFIX purepgroup listobj --pending "$1-$$::*")
+        do
+                echo "- $PG"
+                $PREFIX purepgroup destroy "$PG" >/dev/null 2>&1
+                $PREFIX purepgroup eradicate "$PG" >/dev/null
+        done
+fi
+
+echo "- $1-$$"
+$PREFIX purepod destroy "$1-$$" >/dev/null && $PREFIX purepod eradicate "$1-$$" >/dev/null
+
+
+echo "Done."
