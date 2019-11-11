@@ -9,7 +9,7 @@ then
 elif (($# == 2))
 then
         echo "Running remotely."
-        PREFIX="echo ssh $2"
+        PREFIX="ssh $2"
 else
         echo "usage: $0 POD [ARRAY]"
         exit 1
@@ -69,7 +69,6 @@ then
         exit 1
 fi
 
-
 echo "$(date '+%F %T'): Copying each volume from the pod clone '$1-$$':"
 
 counter=0
@@ -91,22 +90,22 @@ do
 			echo " ** IGNORING **"
 			((ignored++))
 			continue
-		elif [  "${BASENAME:0:5}" == 't0112' ]
+		elif [ "${BASENAME:0:5}" == 't0112' ]
 		then
 			echo " ** IGNORING **"
 			((ignored++))
 			continue
-		elif [  "${BASENAME:0:5}" == 'p0103' ]
+		elif [ "${BASENAME:0:5}" == 'p0103' ]
 		then
 			echo " ** IGNORING **"
 			((ignored++))
 			continue
-		elif [  "${BASENAME}" == 'p0102_tsttrn_au001' ]
+		elif [ "${BASENAME}" == 'p0102_tsttrn_au001' ]
 		then
 			echo " ** IGNORING **"
 			((ignored++))
 			continue
-		elif [  "${BASENAME}" == 'd0102-test-volume' ]
+		elif [ "${BASENAME}" == 'd0102-test-volume' ]
 		then
 			echo " ** IGNORING **"
 			((ignored++))
@@ -120,9 +119,9 @@ do
 
         if ! $PREFIX purevol list "$ASYNCHNAME" >/dev/null 2>&1
         then
-                echo "  Creating the volume '$ASYNCHNAME'..."
+        	echo "  Creating the volume '$ASYNCHNAME'..."
 
-                if ! $PREFIX purevol create --size 1m "$ASYNCHNAME" >/dev/null
+		if ! $PREFIX purevol create --size 1m "$ASYNCHNAME" >/dev/null
                 then
                         exit 1
                 fi
@@ -143,35 +142,59 @@ do
                 exit 1
         fi
 
-        $PREFIX purevol eradicate $($PREFIX purevol listobj --pending-only --type snap "$ASYNCHNAME") >/dev/null
+	$PREFIX purevol eradicate $($PREFIX purevol listobj --pending-only --type snap "$ASYNCHNAME") >/dev/null
 done
 
 
-echo "$(date '+%F %T'): Replicating the protection group '$1-async'..."
+echo "$(date '+%F %T'): Triggering replication of the protection group '$1-async'..."
 
 $PREFIX purepgroup snap --apply-retention --replicate-now "$1-async" >/dev/null
 
 
 echo "$(date '+%F %T'): Cleaning up:"
 
-for VOL in $($PREFIX purevol listobj --pending "$1-$$::*")
+volumes=$($PREFIX purevol listobj --pending "$1-$$::*" 2>/dev/null| wc -l)
+pgroups=$($PREFIX purepgroup listobj --pending "$1-$$::*" 2>/dev/null | wc -l)
+
+if [ $volumes -ge 50 ]
+then
+	while true
+	do
+		echo "$(date '+%F %T'): Array $2 pod '$1-$$' still has $volumes volumes. Please destroy and eradicate in GUI."
+		if [ $pgroups -ge 50 ]
+		then
+			echo "$(date '+%F %T'): Also, there are $pgroups protection groups. Please destroy and eradicate in GUI, or I'll do it slowly after you do the volumes."
+		fi
+		sleep 57
+		volumes=$($PREFIX purevol listobj --pending "$1-$$::*" 2>/dev/null | wc -l)
+		pgroups=$($PREFIX purepgroup listobj --pending "$1-$$::*" 2>/dev/null | wc -l)
+		if [ $volumes -eq 0 ]
+		then
+			break
+		fi
+	done
+	echo ""
+else
+	for VOL in $($PREFIX purevol listobj --pending "$1-$$::*" 2>/dev/null)
 do
-        echo "- $VOL"
+        echo "- Volume $VOL"
         $PREFIX purevol destroy "$VOL" >/dev/null 2>&1
         $PREFIX purevol eradicate "$VOL" >/dev/null
 done
+
+fi
 
 if $PREFIX purepgroup list --pending "$1-$$::*" >/dev/null 2>&1
 then
         for PG in $($PREFIX purepgroup listobj --pending "$1-$$::*")
         do
-                echo "- $PG"
+                echo "- Protection group $PG"
                 $PREFIX purepgroup destroy "$PG" >/dev/null 2>&1
                 $PREFIX purepgroup eradicate "$PG" >/dev/null
         done
 fi
 
-echo "- $1-$$"
+echo "- Pod $1-$$"
 $PREFIX purepod destroy "$1-$$" >/dev/null && $PREFIX purepod eradicate "$1-$$" >/dev/null
 
 
