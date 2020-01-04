@@ -15,8 +15,8 @@ else
         exit 1
 fi
 
-
-echo "Checking if the array ${2:+'$2' }is online..."
+echo "$(date '+%F %T'): Starting."
+echo "$(date '+%F %T'): Checking if the array ${2:+'$2' }is online..."
 
 if ! $PREFIX purearray list >/dev/null
 then
@@ -24,7 +24,7 @@ then
 fi
 
 
-echo "Checking if the pod '$1' exists..."
+echo "$(date '+%F %T'): Checking if the pod '$1' exists..."
 
 if ! $PREFIX purepod list "$1" >/dev/null
 then
@@ -32,7 +32,7 @@ then
 fi
 
 
-echo "Checking if the pod '$1' has any volumes..."
+echo "$(date '+%F %T'): Checking if the pod '$1' has any volumes..."
 
 if ! $PREFIX purevol list "$1::*" >/dev/null
 then
@@ -40,7 +40,7 @@ then
 fi
 
 
-echo "Checking if the protection group '$1-async' exists..."
+echo "$(date '+%F %T'): Checking if the protection group '$1-async' exists..."
 
 if ! $PREFIX purepgroup list "$1-async" >/dev/null 2>&1
 then
@@ -53,7 +53,7 @@ then
 fi
 
 
-echo "Checking if a transfer is in progress..."
+echo "$(date '+%F %T'): Checking if a transfer is in progress..."
 
 if $PREFIX purepgroup list --nvp --snap --transfer "$1-async" | grep "Progress=." >/dev/null 2>&1
 then
@@ -62,76 +62,140 @@ then
 fi
 
 
-echo "Cloning the pod '$1'..."
+echo "$(date '+%F %T'): Cloning the pod '$1'..."
 
 if ! $PREFIX purepod clone "$1" "$1-$$" >/dev/null
 then
         exit 1
 fi
 
+echo "$(date '+%F %T'): Copying each volume from the pod clone '$1-$$':"
 
-echo "Copying each volume from the pod clone '$1-$$':"
+counter=0
+ignored=0
+total=$($PREFIX purevol listobj "$1-$$::*" | wc -l)
 
 for VOL in $($PREFIX purevol listobj "$1-$$::*")
 do
+	((counter++))
         BASENAME=${VOL#$1-$$::}
-        echo "- $BASENAME"
+	ASYNCHNAME="${BASENAME}-async"
+	ASYNCHNAME=${ASYNCHNAME:0:63}
+	echo -n "$(date '+%F %T'): Volume $counter of $total - $BASENAME"
 
-        if ! $PREFIX purevol list "$BASENAME-async" >/dev/null 2>&1
+	if [ "$1" == 'AIX-pod' ]
+	then
+		if [ ${#BASENAME} -ge 22 ]
+		then
+			echo " ** IGNORING **"
+			((ignored++))
+			continue
+		elif [ "${BASENAME:0:5}" == 't0112' ]
+		then
+			echo " ** IGNORING **"
+			((ignored++))
+			continue
+		elif [ "${BASENAME:0:5}" == 'p0103' ]
+		then
+			echo " ** IGNORING **"
+			((ignored++))
+			continue
+		elif [ "${BASENAME}" == 'p0102_tsttrn_au001' ]
+		then
+			echo " ** IGNORING **"
+			((ignored++))
+			continue
+		elif [ "${BASENAME}" == 'd0102-test-volume' ]
+		then
+			echo " ** IGNORING **"
+			((ignored++))
+			continue
+		else
+			echo ""
+		fi
+	else
+		echo ""
+	fi
+
+        if ! $PREFIX purevol list "$ASYNCHNAME" >/dev/null 2>&1
         then
-                echo "  Creating the volume '$BASENAME-async'..."
+        	echo "  Creating the volume '$ASYNCHNAME'..."
 
-                if ! $PREFIX purevol create --size 1m "$BASENAME-async" >/dev/null
+		if ! $PREFIX purevol create --size 1m "$ASYNCHNAME" >/dev/null
                 then
                         exit 1
                 fi
         fi
 
-        if ! $PREFIX purevol list --protect "$BASENAME-async" | grep "^$BASENAME-async *$1-async *$" >/dev/null 2>&1
+        if ! $PREFIX purevol list --protect "$ASYNCHNAME" | grep "^$ASYNCHNAME *$1-async *$" >/dev/null 2>&1
         then
-                echo "  Adding the volume '$BASENAME-async' to the protection group '$1-async'..."
+                echo "  Adding the volume '$ASYNCHNAME' to the protection group '$1-async'..."
 
-                if ! $PREFIX purevol add --pgroup "$1-async" "$BASENAME-async" >/dev/null
+                if ! $PREFIX purevol add --pgroup "$1-async" "$ASYNCHNAME" >/dev/null
                 then
                         exit 1
                 fi
         fi
 
-        if ! $PREFIX purevol copy --overwrite "$1-$$::$BASENAME" "$BASENAME-async" >/dev/null
+        if ! $PREFIX purevol copy --overwrite "$1-$$::$BASENAME" "$ASYNCHNAME" >/dev/null
         then
                 exit 1
         fi
 
-        $PREFIX purevol eradicate $(purevol listobj --pending-only --type snap "$BASENAME-async") >/dev/null
+	$PREFIX purevol eradicate $($PREFIX purevol listobj --pending-only --type snap "$ASYNCHNAME") >/dev/null
 done
 
 
-echo "Replicating the protection group '$1-async'..."
+echo "$(date '+%F %T'): Triggering replication of the protection group '$1-async'..."
 
 $PREFIX purepgroup snap --apply-retention --replicate-now "$1-async" >/dev/null
 
 
-echo "Cleaning up:"
+echo "$(date '+%F %T'): Cleaning up:"
 
-for VOL in $($PREFIX purevol listobj --pending "$1-$$::*")
+volumes=$($PREFIX purevol listobj --pending "$1-$$::*" 2>/dev/null| wc -l)
+pgroups=$($PREFIX purepgroup listobj --pending "$1-$$::*" 2>/dev/null | wc -l)
+
+if [ $volumes -ge 50 ]
+then
+	while true
+	do
+		echo "$(date '+%F %T'): Array $2 pod '$1-$$' still has $volumes volumes. Please destroy and eradicate in GUI."
+		if [ $pgroups -ge 50 ]
+		then
+			echo "$(date '+%F %T'): Also, there are $pgroups protection groups. Please destroy and eradicate in GUI, or I'll do it slowly after you do the volumes."
+		fi
+		sleep 57
+		volumes=$($PREFIX purevol listobj --pending "$1-$$::*" 2>/dev/null | wc -l)
+		pgroups=$($PREFIX purepgroup listobj --pending "$1-$$::*" 2>/dev/null | wc -l)
+		if [ $volumes -eq 0 ]
+		then
+			break
+		fi
+	done
+	echo ""
+else
+	for VOL in $($PREFIX purevol listobj --pending "$1-$$::*" 2>/dev/null)
 do
-        echo "- $VOL"
+        echo "- Volume $VOL"
         $PREFIX purevol destroy "$VOL" >/dev/null 2>&1
         $PREFIX purevol eradicate "$VOL" >/dev/null
 done
+
+fi
 
 if $PREFIX purepgroup list --pending "$1-$$::*" >/dev/null 2>&1
 then
         for PG in $($PREFIX purepgroup listobj --pending "$1-$$::*")
         do
-                echo "- $PG"
+                echo "- Protection group $PG"
                 $PREFIX purepgroup destroy "$PG" >/dev/null 2>&1
                 $PREFIX purepgroup eradicate "$PG" >/dev/null
         done
 fi
 
-echo "- $1-$$"
+echo "- Pod $1-$$"
 $PREFIX purepod destroy "$1-$$" >/dev/null && $PREFIX purepod eradicate "$1-$$" >/dev/null
 
 
-echo "Done."
+echo "$(date '+%F %T'): Done."

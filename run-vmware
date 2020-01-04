@@ -1,0 +1,19 @@
+#!/bin/bash
+
+folder=/c/pure/scripts
+script=${folder}/podbkp
+pod=VMware
+array=danppure01
+runDate=$(date +%Y%m%d%H%M%S)
+log=${folder}/${pod}-${runDate}.log
+
+if [ $(ls -al ${folder}/${pod}*.log | wc -l) -gt 0 ]
+then
+	mv ${folder}/${pod}*.log ${folder}/archive/
+fi
+
+echo Executing $script $pod $array
+echo Log created in $log
+
+$script $pod $array > $log 2>&1 &
+
